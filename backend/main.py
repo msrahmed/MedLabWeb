@@ -2,7 +2,14 @@
 import os
 from datetime import datetime, timedelta
 
-from fastapi import FastAPI, HTTPException
+from fastapi import (
+    FastAPI,
+    HTTPException,
+    Depends,
+)
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from jose import JWTError
+
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from jose import jwt
@@ -59,6 +66,69 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# JWT authentication
+bearer_scheme = HTTPBearer(auto_error=False)
+
+
+def get_current_user(
+    credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
+):
+    if credentials is None:
+        raise HTTPException(
+            status_code=401,
+            detail="Authentication required.",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    token = credentials.credentials
+
+    try:
+        payload = jwt.decode(
+            token,
+            JWT_SECRET_KEY,
+            algorithms=[JWT_ALGORITHM],
+        )
+
+        user_id = int(payload.get("sub"))
+
+    except (JWTError, TypeError, ValueError):
+        raise HTTPException(
+            status_code=401,
+            detail="Invalid or expired access token.",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    # Verify that the account still exists and is active.
+    with engine.connect() as connection:
+        user = connection.execute(
+            text("""
+                SELECT Id, Username, FullName, Email, Role, Status
+                FROM Users
+                WHERE Id = :user_id
+            """),
+            {"user_id": user_id},
+        ).mappings().first()
+
+    if not user or user["Status"] != 0:
+        raise HTTPException(
+            status_code=401,
+            detail="Account is inactive or unavailable.",
+        )
+
+    return dict(user)
+
+
+def require_admin(
+    current_user: dict = Depends(get_current_user),
+):
+    # UserRole.Administrator = 0
+    if current_user["Role"] != 0:
+        raise HTTPException(
+            status_code=403,
+            detail="Administrator access required.",
+        )
+
+    return current_user
 
 
 @app.get("/")
@@ -67,7 +137,9 @@ def home():
 
 
 @app.get("/api/health")
-def health():
+def health(
+current_user: dict = Depends(get_current_user),
+):
     try:
         with engine.connect() as connection:
             result = connection.execute(
@@ -86,7 +158,9 @@ def health():
     
 
 @app.get("/api/schema/tables")
-def get_tables():
+def get_tables(
+        current_user: dict = Depends(get_current_user),
+):
     inspector = inspect(engine)
 
     tables = []
@@ -110,7 +184,9 @@ def get_tables():
 
 
 @app.get("/api/schema/relationships")
-def get_relationships():
+def get_relationships(
+current_user: dict = Depends(require_admin),
+):
     inspector = inspect(engine)
 
     relationships = []
@@ -128,7 +204,9 @@ def get_relationships():
 
 
 @app.get("/api/dashboard/summary")
-def dashboard_summary():
+def dashboard_summary(
+    current_user: dict = Depends(get_current_user),
+):
     try:
         with engine.connect() as connection:
             query = text("""
@@ -165,7 +243,8 @@ def dashboard_summary():
 def get_patients(
     search: str = "",
     limit: int = 25,
-    offset: int = 0
+    offset: int = 0,
+    current_user: dict = Depends(get_current_user),
 ):
     try:
         limit = max(1, min(limit, 100))
@@ -230,7 +309,9 @@ def get_patients(
     
 
 @app.get("/api/schema/user-metadata")
-def get_user_metadata():
+def get_user_metadata(
+current_user: dict = Depends(require_admin),
+):
     try:
         with engine.connect() as connection:
             roles = connection.execute(text("""
