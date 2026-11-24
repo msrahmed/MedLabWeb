@@ -118,17 +118,25 @@ def get_current_user(
     return dict(user)
 
 
-def require_admin(
-    current_user: dict = Depends(get_current_user),
-):
-    # UserRole.Administrator = 0
-    if current_user["Role"] != 0:
-        raise HTTPException(
-            status_code=403,
-            detail="Administrator access required.",
-        )
 
-    return current_user
+def require_roles(*allowed_roles: int):
+    def role_checker(
+        current_user: dict = Depends(get_current_user),
+    ):
+        if current_user["Role"] not in allowed_roles:
+            raise HTTPException(
+                status_code=403,
+                detail="You do not have permission to access this resource.",
+            )
+
+        return current_user
+
+    return role_checker
+
+
+# UserRole values from the desktop application
+require_admin = require_roles(0)
+
 
 
 @app.get("/")
@@ -159,7 +167,7 @@ current_user: dict = Depends(get_current_user),
 
 @app.get("/api/schema/tables")
 def get_tables(
-        current_user: dict = Depends(get_current_user),
+        current_user: dict = Depends(require_admin),
 ):
     inspector = inspect(engine)
 
@@ -205,7 +213,7 @@ current_user: dict = Depends(require_admin),
 
 @app.get("/api/dashboard/summary")
 def dashboard_summary(
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(require_roles(0, 1, 2, 3, 4, 5)),
 ):
     try:
         with engine.connect() as connection:
@@ -244,7 +252,7 @@ def get_patients(
     search: str = "",
     limit: int = 25,
     offset: int = 0,
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(require_roles(0, 1, 3, 4, 5)),
 ):
     try:
         limit = max(1, min(limit, 100))
@@ -527,3 +535,46 @@ def login(request: LoginRequest):
                 "role": user["Role"],
             },
         }
+
+
+@app.get("/api/admin/users")
+def get_users(
+    search: str = "",
+    limit: int = 50,
+    current_user: dict = Depends(require_admin),
+):
+    limit = max(1, min(limit, 100))
+
+    with engine.connect() as connection:
+        users = connection.execute(
+            text("""
+                SELECT
+                    Id,
+                    Username,
+                    FullName,
+                    Email,
+                    Role,
+                    Status,
+                    CreatedAt,
+                    LastLogin
+                FROM Users
+                WHERE
+                    :search = ''
+                    OR Username LIKE :pattern
+                    OR FullName LIKE :pattern
+                    OR Email LIKE :pattern
+                ORDER BY Id DESC
+                OFFSET 0 ROWS
+                FETCH NEXT :limit ROWS ONLY
+            """),
+            {
+                "search": search,
+                "pattern": f"%{search}%",
+                "limit": limit,
+            },
+        ).mappings().all()
+
+    return {
+        "users": [dict(user) for user in users],
+        "count": len(users),
+    }

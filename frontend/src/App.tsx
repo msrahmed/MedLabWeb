@@ -43,6 +43,22 @@ interface PatientResponse {
   offset: number
 }
 
+interface ManagedUser {
+  Id: number
+  Username: string
+  FullName: string | null
+  Email: string | null
+  Role: number
+  Status: number
+  CreatedAt: string | null
+  LastLogin: string | null
+}
+
+interface UserResponse {
+  users: ManagedUser[]
+  count: number
+}
+
 const API = 'http://127.0.0.1:8000'
 const PAGE_SIZE = 10
 
@@ -90,6 +106,12 @@ function App() {
   const [patientSearch, setPatientSearch] = useState('')
   const [patientOffset, setPatientOffset] = useState(0)
   const [patientTotal, setPatientTotal] = useState(0)
+
+  // User management state
+  const [users, setUsers] = useState<ManagedUser[]>([])
+  const [usersLoading, setUsersLoading] = useState(false)
+  const [usersError, setUsersError] = useState('')
+  const [userSearch, setUserSearch] = useState('')
 
   // Load dashboard data
   async function loadDashboard() {
@@ -157,6 +179,44 @@ function App() {
     }
   }
 
+
+  async function loadUsers() {
+    if (!auth || auth.user.role !== 0) return
+
+    try {
+      setUsersLoading(true)
+      setUsersError('')
+
+      const params = new URLSearchParams({
+        search: userSearch,
+        limit: '50',
+      })
+
+      const response = await fetch(
+        `${API}/api/admin/users?${params}`,
+        {
+          headers: {
+            Authorization: `Bearer ${auth.access_token}`,
+          },
+        }
+      )
+
+      if (!response.ok) {
+        throw new Error(`API returned ${response.status}`)
+      }
+
+      const result: UserResponse = await response.json()
+      setUsers(result.users)
+
+    } catch (err) {
+      setUsersError(
+        err instanceof Error ? err.message : 'Unable to load users'
+      )
+    } finally {
+      setUsersLoading(false)
+    }
+  }
+
   // Load dashboard after successful login
   useEffect(() => {
     if (auth) {
@@ -171,16 +231,48 @@ function App() {
     }
   }, [auth, activePage, patientSearch, patientOffset])
 
+
+  useEffect(() => {
+    if (auth?.user.role === 0 && activePage === 'User Management') {
+      loadUsers()
+    }
+  }, [auth, activePage, userSearch])
+
   // Sidebar navigation
+    // Sidebar navigation with role-based visibility
   const menu = [
-    { title: 'Dashboard', icon: LayoutDashboard },
-    { title: 'Patients', icon: Users },
-    { title: 'Visits', icon: CalendarDays },
-    { title: 'Tests & Catalogue', icon: FlaskConical },
-    { title: 'Test Results', icon: FileText },
-    { title: 'Payments', icon: CreditCard },
-    { title: 'Reagent Inventory', icon: Package },
+    {
+      title: 'Dashboard',
+      icon: LayoutDashboard,
+      allowedRoles: [0, 1, 2, 3, 4, 5],
+    },
+    {
+      title: 'Patients',
+      icon: Users,
+      allowedRoles: [0, 1, 3, 4, 5],
+    },
+    {
+      title: 'User Management',
+      icon: Users,
+      allowedRoles: [0],
+    },
   ]
+
+  const visibleMenu = menu.filter(item =>
+    item.allowedRoles.includes(auth?.user.role ?? -1)
+  )
+
+    // Prevent access to pages not permitted for the current role
+  useEffect(() => {
+    const allowed = visibleMenu.some(
+      item => item.title === activePage
+    )
+
+    if (!allowed) {
+      setActivePage('Dashboard')
+    }
+  }, [auth, activePage])
+  
 
   // Dashboard metrics
   const metrics = [
@@ -247,7 +339,7 @@ function App() {
         <div className="nav-label">WORKSPACE</div>
 
         <nav>
-          {menu.map(item => {
+          {visibleMenu.map(item => {
             const Icon = item.icon
 
             return (
@@ -616,13 +708,91 @@ function App() {
 
           {/* OTHER SECTIONS */}
 
-          {activePage !== 'Dashboard' && activePage !== 'Patients' && (
+          
+{/* USER MANAGEMENT PAGE */}
+{activePage === 'User Management' && auth.user.role === 0 && (
+  <section className="patients-section">
+    <div className="patients-toolbar">
+      <div className="patients-search">
+        <Search size={19} />
+        <input
+          type="text"
+          placeholder="Search users..."
+          value={userSearch}
+          onChange={event => setUserSearch(event.target.value)}
+        />
+      </div>
+
+      <span className="patients-total">
+        {users.length} users
+      </span>
+    </div>
+
+    {usersError && (
+      <div className="error-banner">
+        <Activity size={18} />
+        <span>{usersError}</span>
+        <button onClick={loadUsers}>Retry</button>
+      </div>
+    )}
+
+    <div className="patients-table-wrapper">
+      <table className="patients-table">
+        <thead>
+          <tr>
+            <th>ID</th>
+            <th>Username</th>
+            <th>Full name</th>
+            <th>Email</th>
+            <th>Role</th>
+            <th>Status</th>
+            <th>Last login</th>
+          </tr>
+        </thead>
+
+        <tbody>
+          {usersLoading ? (
+            <tr>
+              <td colSpan={7} className="table-message">
+                Loading users...
+              </td>
+            </tr>
+          ) : users.length === 0 ? (
+            <tr>
+              <td colSpan={7} className="table-message">
+                No users found.
+              </td>
+            </tr>
+          ) : (
+            users.map(user => (
+              <tr key={user.Id}>
+                <td>#{user.Id}</td>
+                <td className="patient-name">{user.Username}</td>
+                <td>{user.FullName || '—'}</td>
+                <td>{user.Email || '—'}</td>
+                <td>{ROLE_NAMES[user.Role] || 'Unknown'}</td>
+                <td>{user.Status === 0 ? 'Active' : 'Inactive'}</td>
+                <td>{formatDate(user.LastLogin)}</td>
+              </tr>
+            ))
+          )}
+        </tbody>
+      </table>
+    </div>
+  </section>
+)}
+
+          {/* OTHER SECTIONS */}
+          {activePage !== 'Dashboard' &&
+          activePage !== 'Patients' &&
+          activePage !== 'User Management' && (
             <div className="panel coming-soon">
               <Database size={32} />
               <h3>{activePage}</h3>
               <p>This module will be implemented in a future development step.</p>
             </div>
           )}
+
 
           <footer>
             MedLab Administration <span>•</span> Development environment
